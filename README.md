@@ -1,10 +1,18 @@
 # bobo-memory
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![GitHub](https://img.shields.io/badge/github-WinWin405%2Fbobo--memory-181717?logo=github)](https://github.com/WinWin405/bobo-memory)
+
 [English](README.md) | [简体中文](README_zh.md)
 
 **Universal memory middleware for LLM agents** — file-based, scope-aware, BYO LLM.
 
 `bobo-memory` gives any Python LLM project a persistent, visible, governable memory system without requiring a database, a vector store, or an embedded LLM. The entire memory lives as Markdown files you can open in Obsidian.
+
+**Getting started**: follow the [tutorial](docs/TUTORIAL_zh.md) (Chinese) from init through agent integration.
+
+**For coding agents / integrators**: [integration guide](docs/INTEGRATION_zh.md) · [one-page brief](docs/AGENT_BRIEF_zh.md) · [multi-user Web / SaaS](docs/AGENT_SAAS_TUTORIAL_zh.md)
 
 ---
 
@@ -256,7 +264,7 @@ for spec in mem.tool_specs():
 ## Development
 
 ```bash
-git clone https://github.com/<your-org>/bobo-memory.git
+git clone https://github.com/WinWin405/bobo-memory.git
 cd bobo-memory
 python -m venv .venv
 # Windows: .venv\Scripts\activate
@@ -265,6 +273,10 @@ pip install -e ".[viewer]"
 pytest bobo_memory/tests/
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and pull requests are welcome on [GitHub](https://github.com/WinWin405/bobo-memory/issues).
+
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — see [LICENSE](LICENSE) for the full text.

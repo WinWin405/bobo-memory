@@ -1,5 +1,9 @@
 # bobo-memory
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![GitHub](https://img.shields.io/badge/github-WinWin405%2Fbobo--memory-181717?logo=github)](https://github.com/WinWin405/bobo-memory)
+
 [English](README.md) | **简体中文**
 
 **面向 LLM Agent 的通用记忆中间件** — 基于文件、支持作用域隔离、自备 LLM（BYO LLM）。
@@ -260,7 +264,7 @@ for spec in mem.tool_specs():
 ## 本地开发
 
 ```bash
-git clone https://github.com/<your-org>/bobo-memory.git
+git clone https://github.com/WinWin405/bobo-memory.git
 cd bobo-memory
 python -m venv .venv
 # Windows: .venv\Scripts\activate
@@ -269,6 +273,10 @@ pip install -e ".[viewer]"
 pytest bobo_memory/tests/
 ```
 
+## 参与贡献
+
+详见 [CONTRIBUTING.md](CONTRIBUTING.md)。欢迎在 [GitHub Issues](https://github.com/WinWin405/bobo-memory/issues) 反馈问题或提交 PR。
+
 ## 许可证
 
-[MIT](LICENSE)
+[MIT](LICENSE) — 完整文本见 [LICENSE](LICENSE)。

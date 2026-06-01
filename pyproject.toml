@@ -9,6 +9,20 @@ description = "A universal memory middleware for LLM agents — file-based, scop
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+authors = [{ name = "WinWin405" }]
+keywords = ["llm", "agent", "memory", "markdown", "wiki", "rag", "middleware"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
@@ -21,6 +35,12 @@ dependencies = [
 viewer = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "jinja2>=3.1"]
 embedding = ["sentence-transformers>=3.0"]
 mcp = ["mcp>=1.0"]
+
+[project.urls]
+Homepage = "https://github.com/WinWin405/bobo-memory"
+Repository = "https://github.com/WinWin405/bobo-memory"
+Issues = "https://github.com/WinWin405/bobo-memory/issues"
+Documentation = "https://github.com/WinWin405/bobo-memory/blob/master/docs/TUTORIAL_zh.md"
 
 [project.scripts]
 bobo-memory = "bobo_memory.cli:main"
