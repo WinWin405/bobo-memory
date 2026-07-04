@@ -8,6 +8,23 @@ from typing import Any
 
 from bobo_memory.stream.adapters.base import RawDoc, StreamAdapter
 
+# Linux NAME_MAX is 255; avoid treating long inline text as a path.
+_MAX_PATH_CANDIDATE_LEN = 4096
+
+
+def _existing_path(payload: str | Path) -> Path | None:
+    """Return payload if it points to an existing file, else None."""
+    if isinstance(payload, str):
+        if "\n" in payload or len(payload) > _MAX_PATH_CANDIDATE_LEN:
+            return None
+    try:
+        path = Path(str(payload))
+        if path.exists():
+            return path
+    except OSError:
+        return None
+    return None
+
 
 class MarkdownAdapter(StreamAdapter):
     """Accepts raw markdown text or a file path."""
@@ -15,8 +32,8 @@ class MarkdownAdapter(StreamAdapter):
     name = "markdown"
 
     def parse(self, payload: Any, **kwargs) -> list[RawDoc]:
-        if isinstance(payload, (str, Path)) and Path(str(payload)).exists():
-            path = Path(str(payload))
+        path = _existing_path(payload) if isinstance(payload, (str, Path)) else None
+        if path is not None:
             text = path.read_text(encoding="utf-8")
             title = _extract_title(text) or path.stem
             return [RawDoc(title=title, body=text, adapter=self.name, original_path=str(path))]
