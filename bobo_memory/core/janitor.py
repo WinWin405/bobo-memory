@@ -15,6 +15,11 @@ Three functions, each callable independently or via MemoryClient.run_janitor():
       Deletes audit-YYYY-MM-DD.jsonl files older than policy.audit.retention_days.
       Never deletes today's file regardless of the setting.
 
+  cleanup_locks(project_root)
+      Deletes stale *.lock files anywhere under .bobo/ (centralised
+      .bobo/locks/ plus legacy beside-the-file locks). filelock cannot delete
+      lock files on Windows, so they accumulate until swept here.
+
 Each function returns a dict:
   {
     "deleted_files": int,
@@ -164,6 +169,37 @@ def cleanup_sessions(project_root: Path, policy: "MemoryPolicy") -> dict:
             continue
         try:
             if _file_age_days(f) >= max_age:
+                freed = _safe_unlink(f, report["errors"])
+                report["deleted_files"] += 1
+                report["freed_bytes"] += freed
+        except OSError as exc:
+            report["errors"].append(f"{f}: {exc}")
+
+    return report
+
+
+# --------------------------------------------------------------------------- #
+# Lock cleanup                                                                 #
+# --------------------------------------------------------------------------- #
+
+def cleanup_locks(project_root: Path, *, max_age_hours: float = 24.0) -> dict:
+    """Delete *.lock files under .bobo/ whose mtime is older than *max_age_hours*.
+
+    This library holds locks for at most seconds, so a day-old lock file is
+    guaranteed stale. Sweeping the whole .bobo/ tree also removes legacy
+    beside-the-file locks left by versions before lock centralisation.
+    """
+    report = _empty_report()
+    bobo = project_root / ".bobo"
+    if not bobo.is_dir():
+        return report
+
+    cutoff_days = max_age_hours / 24.0
+    for f in bobo.rglob("*.lock"):
+        if not f.is_file():
+            continue
+        try:
+            if _file_age_days(f) >= cutoff_days:
                 freed = _safe_unlink(f, report["errors"])
                 report["deleted_files"] += 1
                 report["freed_bytes"] += freed

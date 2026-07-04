@@ -71,7 +71,7 @@ class AgentMemory(MemoryLayer):
         trash = d / ".trash"
         trash.mkdir(parents=True, exist_ok=True)
 
-    def build_prompt(self) -> str:
+    def build_prompt(self, *, include_instructions: bool = True) -> str:
         if not self.is_enabled():
             return ""
 
@@ -88,4 +88,5 @@ class AgentMemory(MemoryLayer):
             "Persistent Agent Memory",
             self.memory_dir,
             extra_guidelines=extra,
+            include_instructions=include_instructions,
         )

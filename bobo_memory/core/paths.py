@@ -63,8 +63,14 @@ def sanitize_git_root(root: str | Path) -> str:
 
 
 def sanitize_agent_type(agent_type: str) -> str:
-    """Replace characters unsafe for directory names (e.g. ':' in plugin namespaces)."""
-    return agent_type.replace(":", "-").replace("/", "-").replace("\\", "-")
+    """Replace characters unsafe for directory names (e.g. ':' in plugin namespaces).
+
+    Raises ValueError for names that would escape the memory tree ('', '.', '..').
+    """
+    safe = agent_type.replace(":", "-").replace("/", "-").replace("\\", "-").strip()
+    if not safe or safe.strip(".") == "":
+        raise ValueError(f"Invalid agent_type {agent_type!r}: must not be empty or dots-only")
+    return safe
 
 
 # --------------------------------------------------------------------------- #
@@ -193,6 +199,10 @@ def audit_dir(project_root: Path) -> Path:
 
 def cache_dir(project_root: Path) -> Path:
     return project_root / ".bobo" / "cache"
+
+
+def locks_dir(project_root: Path) -> Path:
+    return project_root / ".bobo" / "locks"
 
 
 # --------------------------------------------------------------------------- #

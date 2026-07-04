@@ -40,6 +40,7 @@ def get_tool_specs(client: "MemoryClient") -> list[ToolSpec]:
         handle_wiki_link,
         handle_wiki_log,
         handle_ingest_next,
+        handle_ingest_done,
     )
     from bobo_memory.tools.lifecycle import (
         handle_memory_forget,
@@ -226,8 +227,9 @@ def get_tool_specs(client: "MemoryClient") -> list[ToolSpec]:
         ToolSpec(
             name="ingest_next",
             description=(
-                "Pull the next pending ingest task from staging/pending.json. "
-                "Returns the raw source content and instructions for integrating it into memory/wiki."
+                "Lease the next pending ingest task from staging/pending.json. "
+                "Returns the raw source content and instructions for integrating it into memory/wiki. "
+                "Confirm completion with ingest_done, or the task is retried after the lease expires."
             ),
             parameters={
                 "type": "object",
@@ -235,6 +237,24 @@ def get_tool_specs(client: "MemoryClient") -> list[ToolSpec]:
                 "required": [],
             },
             handler=_bind(handle_ingest_next),
+        ),
+        ToolSpec(
+            name="ingest_done",
+            description=(
+                "Confirm that an ingest task has been fully integrated into memory/wiki. "
+                "Removes the task from the staging queue."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "source_id": {
+                        "type": "string",
+                        "description": "The source_id of the completed ingest task.",
+                    },
+                },
+                "required": ["source_id"],
+            },
+            handler=_bind(handle_ingest_done),
         ),
     ]
     return specs

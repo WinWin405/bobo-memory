@@ -40,6 +40,9 @@ Default config.yaml policy section:
       retention_days: null      # null = keep forever
     raw:
       max_file_size_kb: null    # null = unlimited
+    staging:
+      lease_minutes: 30         # ingest task lease before retry
+      max_attempts: 3           # leases before a task is marked failed
 """
 
 from __future__ import annotations
@@ -104,6 +107,27 @@ class AuditPolicy:
 
 
 @dataclass
+class StagingPolicy:
+    """Controls the ingest task lease/retry behaviour.
+
+    A task returned by ingest_next is leased (not deleted): if the agent does
+    not confirm with ingest_done within *lease_minutes*, the task becomes
+    available again, up to *max_attempts* leases; after that it is marked
+    'failed' and kept in staging for inspection.
+    """
+
+    lease_minutes: int = 30
+    max_attempts: int = 3
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "StagingPolicy":
+        return cls(
+            lease_minutes=int(d.get("lease_minutes", 30)),
+            max_attempts=int(d.get("max_attempts", 3)),
+        )
+
+
+@dataclass
 class RawPolicy:
     """Controls maximum size for raw/ ingest documents."""
 
@@ -156,6 +180,7 @@ class MemoryPolicy:
     session: SessionPolicy = field(default_factory=SessionPolicy)
     audit: AuditPolicy = field(default_factory=AuditPolicy)
     raw: RawPolicy = field(default_factory=RawPolicy)
+    staging: StagingPolicy = field(default_factory=StagingPolicy)
 
     # compiled regex cache
     _compiled: list[re.Pattern] = field(default_factory=list, repr=False)
@@ -174,6 +199,7 @@ class MemoryPolicy:
         session_cfg = d.get("session", {}) or {}
         audit_cfg = d.get("audit", {}) or {}
         raw_cfg = d.get("raw", {}) or {}
+        staging_cfg = d.get("staging", {}) or {}
         max_files = d.get("max_files_per_layer", {}) or {}
 
         return cls(
@@ -186,6 +212,7 @@ class MemoryPolicy:
             session=SessionPolicy.from_dict(session_cfg),
             audit=AuditPolicy.from_dict(audit_cfg),
             raw=RawPolicy.from_dict(raw_cfg),
+            staging=StagingPolicy.from_dict(staging_cfg),
         )
 
     @classmethod

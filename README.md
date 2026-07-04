@@ -1,5 +1,6 @@
 # bobo-memory
 
+[![CI](https://github.com/WinWin405/bobo-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/WinWin405/bobo-memory/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![GitHub](https://img.shields.io/badge/github-WinWin405%2Fbobo--memory-181717?logo=github)](https://github.com/WinWin405/bobo-memory)
@@ -39,7 +40,9 @@ pip install bobo-memory
 Optional extras:
 
 ```bash
-pip install "bobo-memory[viewer]"     # web UI: fastapi + uvicorn
+pip install "bobo-memory[mcp]"        # MCP stdio server for Claude Code / IDE agents
+pip install "bobo-memory[watch]"      # directory watching: watchdog
+pip install "bobo-memory[viewer]"     # web UI + read-only REST API: fastapi + uvicorn
 pip install "bobo-memory[embedding]"  # vector recall: sentence-transformers
 ```
 
@@ -83,9 +86,29 @@ result = mem.dispatch_tool_call(tool_name, arguments)
 # Ingest a file (lands in raw/ + staging/ — no LLM called)
 mem.ingest(adapter="markdown", path="article.md")
 
-# Agent picks it up next turn
+# Agent picks it up next turn (task is leased, not deleted)
 result = mem.dispatch_tool_call("ingest_next", {})
 # → returns raw content + instruction to integrate into wiki/memory
+
+# Confirm when done — unconfirmed tasks are retried after the lease expires
+mem.dispatch_tool_call("ingest_done", {"source_id": result["task"]["source_id"]})
+```
+
+### 4. Automatic memory capture (zero extra LLM calls)
+
+`memory_nudge()` scans recent messages with pure rules (no LLM) for
+corrections, preferences, decisions and explicit "remember this" phrases.
+When something fires, it returns a one-line reminder to append to your NEXT
+request's system prompt — the main model then saves the memory inside its
+normal turn, so no additional API call is ever made:
+
+```python
+nudge = mem.memory_nudge(messages)          # "" most of the time
+if nudge:
+    system_prompt += "\n\n" + nudge
+
+# Optional dedup check before saving (BM25, no LLM):
+similar = mem.find_similar("integration tests must pass before deploy")
 ```
 
 ---
@@ -116,7 +139,8 @@ result = mem.dispatch_tool_call("ingest_next", {})
 | `memory_purge` | Permanent delete (audit log kept) |
 | `wiki_link` | Bidirectional cross-reference between wiki pages |
 | `wiki_log` | Append to `wiki/log.md` timeline |
-| `ingest_next` | Pull next task from `staging/pending.json` |
+| `ingest_next` | Lease the next task from `staging/pending.json` (retried if not confirmed) |
+| `ingest_done` | Confirm an ingest task is integrated — removes it from staging |
 
 ---
 
@@ -203,6 +227,7 @@ bobo-memory ingest    --file PATH [--adapter markdown]
 bobo-memory proposal  list / accept --id X / reject --id X
 bobo-memory snapshot  save / apply / status
 bobo-memory serve     [--port 8765]
+bobo-memory mcp       [--agent-type NAME] [--scope SCOPE]
 ```
 
 ---
@@ -226,6 +251,44 @@ bobo-memory serve     [--port 8765]
 
 ~/.bobo/               (user-scoped agent memory, cross-project)
 ```
+
+---
+
+## MCP server
+
+Expose all 12 memory tools to any MCP host (Claude Code, IDE agents, …):
+
+```bash
+pip install "bobo-memory[mcp]"
+bobo-memory mcp --agent-type my-agent        # stdio transport
+```
+
+Claude Code `.mcp.json` example:
+
+```json
+{
+  "mcpServers": {
+    "bobo-memory": { "command": "bobo-memory", "args": ["mcp"] }
+  }
+}
+```
+
+Every MCP tool call runs through the same policy → guard → atomic → audit pipeline.
+
+---
+
+## Read-only REST API (viewer)
+
+`bobo-memory serve` (requires `[viewer]`) binds to `127.0.0.1` and exposes:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /status` / `GET /storage` | system status / disk usage |
+| `GET /layers` | enabled layers + directories |
+| `GET /memories/{layer}` | the layer's MEMORY.md index |
+| `GET /memory?file=<rel-path>` | one memory file (guard-checked) |
+| `GET /recall?query=&k=` | BM25 recall as a ContextPack |
+| `GET /audit` / `/lint` / `/proposals` | audit log / wiki health / proposal queue |
 
 ---
 
@@ -257,7 +320,7 @@ for spec in mem.tool_specs():
 - `pyyaml >= 6.0`
 - `rank-bm25 >= 0.2.2`
 - `filelock >= 3.12`
-- `watchdog >= 4.0`
+- `watchdog >= 4.0` (optional, `pip install "bobo-memory[watch]"` — only needed for `watch_directory()`)
 
 ---
 

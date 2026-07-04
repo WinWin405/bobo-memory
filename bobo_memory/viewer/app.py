@@ -34,7 +34,8 @@ def create_app(project_root: str = "."):
         <html><body>
         <h1>bobo-memory viewer</h1>
         <table border=1>{rows}</table>
-        <p><a href="/audit">Audit log</a> | <a href="/status">Status JSON</a></p>
+        <p><a href="/audit">Audit log</a> | <a href="/status">Status JSON</a> |
+        <a href="/layers">Layers</a> | <a href="/storage">Storage</a></p>
         </body></html>
         """
 
@@ -56,6 +57,39 @@ def create_app(project_root: str = "."):
         from bobo_memory.tools.proposal import list_proposals
         root = Path(project_root).resolve()
         return list_proposals(root, layer=layer)
+
+    # ---------------- read-only memory API ---------------- #
+
+    @app.get("/layers")
+    def layers():
+        return {
+            "enabled_layers": client.config.enabled_layers,
+            "layers": client.status()["layers"],
+        }
+
+    @app.get("/memories/{layer}")
+    def memories(layer: str):
+        result = client.dispatch_tool_call("memory_list", {"layer": layer}, actor="human")
+        if not result.get("ok"):
+            return JSONResponse(result, status_code=400)
+        return result
+
+    @app.get("/memory")
+    def memory(file: str):
+        result = client.dispatch_tool_call("memory_read", {"file": file}, actor="human")
+        if not result.get("ok"):
+            status = 404 if "not found" in result.get("error", "").lower() else 400
+            return JSONResponse(result, status_code=status)
+        return result
+
+    @app.get("/recall")
+    def recall(query: str, k: int = 5):
+        pack = client.recall(query, k=k)
+        return pack.model_dump()
+
+    @app.get("/storage")
+    def storage():
+        return client.storage_stats()
 
     return app
 

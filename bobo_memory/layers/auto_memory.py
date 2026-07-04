@@ -42,7 +42,7 @@ class AutoMemory(MemoryLayer):
         ensure_dir(self.memory_dir)
         (self.memory_dir / ".trash").mkdir(parents=True, exist_ok=True)
 
-    def build_prompt(self) -> str:
+    def build_prompt(self, *, include_instructions: bool = True) -> str:
         if not self.is_enabled():
             return ""
 
@@ -55,4 +55,5 @@ class AutoMemory(MemoryLayer):
             "Auto Memory",
             self.memory_dir,
             extra_guidelines=[AUTO_MEMORY_GUIDELINES],
+            include_instructions=include_instructions,
         )

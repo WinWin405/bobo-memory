@@ -14,8 +14,7 @@ Proposal redirect:
 
 from __future__ import annotations
 
-import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +25,32 @@ if TYPE_CHECKING:
 # ------------------------------------------------------------------ #
 # Helpers                                                              #
 # ------------------------------------------------------------------ #
+
+# Filenames the tools must never write directly — they are protocol files
+# maintained by the library itself.
+RESERVED_FILENAMES = {"MEMORY.md", "INDEX.md"}
+
+
+def _sanitize_topic(topic: str) -> str:
+    """Normalise a topic slug into a safe .md filename.
+
+    Raises ValueError for empty/dots-only topics or reserved protocol names.
+    """
+    filename = topic.replace(":", "-").replace("/", "-").replace("\\", "-")
+    filename = filename.strip().lstrip(".")
+    if not filename:
+        raise ValueError(f"Invalid topic {topic!r}: must not be empty or dots-only")
+    if not filename.endswith(".md"):
+        filename += ".md"
+    if filename in RESERVED_FILENAMES:
+        raise ValueError(f"Topic {topic!r} maps to reserved filename '{filename}'")
+    return filename
+
+
+def _one_line(text: str) -> str:
+    """Collapse *text* to a single line for MEMORY.md index entries."""
+    return " ".join(text.split())
+
 
 def _layer_dir(client: "MemoryClient", layer: str) -> Path:
     """Return the memory directory for a given layer."""
@@ -47,11 +72,39 @@ def _layer_dir(client: "MemoryClient", layer: str) -> Path:
 def _build_frontmatter(
     sources: list[str],
     tags: list[str],
+    *,
+    created: str | None = None,
 ) -> str:
     today = date.today().isoformat()
-    src_block = "sources:\n" + "".join(f"  - {s}\n" for s in sources) if sources else "sources: []"
-    tag_block = f"tags: [{', '.join(tags)}]" if tags else "tags: []"
-    return f"---\n{src_block}\n{tag_block}\ncreated: {today}\nupdated: {today}\n---\n\n"
+    created = created or today
+    # Values are interpolated into YAML by hand (downstream parsers are
+    # line-based), so strip characters that would break the format.
+    safe_sources = [_one_line(s) for s in sources if s.strip()]
+    safe_tags = [
+        _one_line(t).replace("[", "").replace("]", "").replace(",", " ")
+        for t in tags if t.strip()
+    ]
+    src_block = (
+        "sources:\n" + "".join(f"  - {s}\n" for s in safe_sources)
+        if safe_sources else "sources: []\n"
+    )
+    tag_block = f"tags: [{', '.join(safe_tags)}]" if safe_tags else "tags: []"
+    return f"---\n{src_block}{tag_block}\ncreated: {created}\nupdated: {today}\n---\n\n"
+
+
+def _existing_created_date(file_path: Path) -> str | None:
+    """Return the frontmatter 'created:' date of an existing memory file, if any."""
+    try:
+        content = file_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    if not content.startswith("---"):
+        return None
+    front = content.split("---", 2)[1] if content.count("---") >= 2 else ""
+    for line in front.splitlines():
+        if line.startswith("created:"):
+            return line[len("created:"):].strip() or None
+    return None
 
 
 def _ok(data: dict) -> dict:
@@ -66,60 +119,61 @@ def _err(msg: str) -> dict:
 # Dispatch                                                             #
 # ------------------------------------------------------------------ #
 
-def dispatch(name: str, arguments: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict[str, Any]:
-    """Dispatch a named tool call to its handler."""
-    _HANDLER_MAP = {
-        "memory_save": handle_memory_save,
-        "memory_update": handle_memory_update,
-        "memory_list": handle_memory_list,
-        "memory_read": handle_memory_read,
-        "memory_recall": handle_memory_recall,
-        "wiki_link": handle_wiki_link,
-        "wiki_log": handle_wiki_log,
-        "ingest_next": handle_ingest_next,
-    }
-    # lifecycle tools imported lazily to avoid circular
-    _LIFECYCLE_MAP = {
-        "memory_forget": "handle_memory_forget",
-        "memory_restore": "handle_memory_restore",
-        "memory_purge": "handle_memory_purge",
-    }
+_HANDLER_MAP: dict[str, Any] = {}
 
-    if name in _HANDLER_MAP:
-        return _HANDLER_MAP[name](arguments, client=client)
-    if name in _LIFECYCLE_MAP:
-        from bobo_memory.tools.lifecycle import handle_memory_forget, handle_memory_restore, handle_memory_purge
-        lc_map = {
+
+def _handler_map() -> dict[str, Any]:
+    """Build the tool-name → handler map once (lifecycle imported lazily to avoid a cycle)."""
+    if not _HANDLER_MAP:
+        from bobo_memory.tools.lifecycle import (
+            handle_memory_forget,
+            handle_memory_purge,
+            handle_memory_restore,
+        )
+        _HANDLER_MAP.update({
+            "memory_save": handle_memory_save,
+            "memory_update": handle_memory_update,
+            "memory_list": handle_memory_list,
+            "memory_read": handle_memory_read,
+            "memory_recall": handle_memory_recall,
+            "wiki_link": handle_wiki_link,
+            "wiki_log": handle_wiki_log,
+            "ingest_next": handle_ingest_next,
+            "ingest_done": handle_ingest_done,
             "memory_forget": handle_memory_forget,
             "memory_restore": handle_memory_restore,
             "memory_purge": handle_memory_purge,
-        }
-        return lc_map[name](arguments, client=client)
+        })
+    return _HANDLER_MAP
 
-    return _err(f"Unknown tool: '{name}'")
+
+def dispatch(name: str, arguments: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict[str, Any]:
+    """Dispatch a named tool call to its handler."""
+    handler = _handler_map().get(name)
+    if handler is None:
+        return _err(f"Unknown tool: '{name}'")
+    return handler(arguments, client=client, actor=actor)
 
 
 # ------------------------------------------------------------------ #
 # memory_save                                                          #
 # ------------------------------------------------------------------ #
 
-def handle_memory_save(args: dict[str, Any], *, client: "MemoryClient") -> dict:
+def handle_memory_save(args: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict:
     layer = args.get("layer", "auto")
     topic = str(args.get("topic", "untitled")).strip()
     content = str(args.get("content", ""))
-    summary = str(args.get("summary") or topic.replace("-", " ").capitalize())
+    summary = _one_line(str(args.get("summary") or topic.replace("-", " ").capitalize()))
     tags: list[str] = args.get("tags") or []
     sources: list[str] = args.get("sources") or []
 
-    # Sanitise topic → filename
-    filename = topic.replace(":", "-").replace("/", "-").replace("\\", "-")
-    if not filename.endswith(".md"):
-        filename += ".md"
-
     try:
+        filename = _sanitize_topic(topic)
+
         # 1. Policy check
         client.policy.check_action(
             "memory_save", layer,
+            actor=actor,
             content=content,
             sources=sources,
         )
@@ -151,8 +205,9 @@ def handle_memory_save(args: dict[str, Any], *, client: "MemoryClient") -> dict:
         # 2. Guard (path boundary)
         client.guard.assert_within_memory(file_path)
 
-        # 3. Build final content with frontmatter
-        front = _build_frontmatter(sources, tags)
+        # 3. Build final content with frontmatter (keep original created date on overwrite)
+        created = _existing_created_date(file_path) if file_path.exists() else None
+        front = _build_frontmatter(sources, tags, created=created)
         full_content = front + content
 
         # 4. Atomic write
@@ -168,13 +223,13 @@ def handle_memory_save(args: dict[str, Any], *, client: "MemoryClient") -> dict:
         # 5. Audit
         client._log(
             "memory_save", layer, str(file_path.relative_to(client.project_root)),
-            tool="memory_save", bytes_written=len(full_content.encode()),
+            actor=actor, tool="memory_save", bytes_written=len(full_content.encode()),
         )
 
         return _ok({"file": str(file_path.relative_to(client.project_root)), "layer": layer})
 
     except Exception as exc:
-        client._log("memory_save", layer, tool="memory_save", ok=False, error=str(exc))
+        client._log("memory_save", layer, actor=actor, tool="memory_save", ok=False, error=str(exc))
         return _err(str(exc))
 
 
@@ -196,7 +251,7 @@ def _redirect_to_proposal(client, layer, topic, filename, content, summary, tags
 # memory_update                                                        #
 # ------------------------------------------------------------------ #
 
-def handle_memory_update(args: dict[str, Any], *, client: "MemoryClient") -> dict:
+def handle_memory_update(args: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict:
     file_rel = str(args.get("file", ""))
     content = str(args.get("content", ""))
     summary: str | None = args.get("summary")
@@ -207,10 +262,20 @@ def handle_memory_update(args: dict[str, Any], *, client: "MemoryClient") -> dic
     file_path = (client.project_root / file_rel).resolve()
 
     try:
+        if file_path.name in RESERVED_FILENAMES:
+            return _err(f"'{file_path.name}' is a protocol file and cannot be updated directly")
+
         layer = _infer_layer(file_path, client)
 
-        client.policy.check_action("memory_update", layer, content=content)
+        client.policy.check_action("memory_update", layer, actor=actor, content=content)
         client.guard.assert_within_memory(file_path)
+
+        # Layers in proposal mode must not be modified directly either
+        if client.guard.should_use_proposal(layer):
+            return _redirect_to_proposal(
+                client, layer, file_path.stem, file_path.name, content,
+                _one_line(summary or file_path.stem), [], [],
+            )
 
         from bobo_memory.core.atomic import atomic_write, file_lock
         with file_lock(file_path):
@@ -221,17 +286,17 @@ def handle_memory_update(args: dict[str, Any], *, client: "MemoryClient") -> dic
             update_entrypoint_index(
                 file_path.parent,
                 filename=file_path.name,
-                summary=summary,
+                summary=_one_line(summary),
             )
 
         client._log(
             "memory_update", layer, file_rel,
-            tool="memory_update", bytes_written=len(content.encode()),
+            actor=actor, tool="memory_update", bytes_written=len(content.encode()),
         )
         return _ok({"file": file_rel})
 
     except Exception as exc:
-        client._log("memory_update", "", file_rel, tool="memory_update", ok=False, error=str(exc))
+        client._log("memory_update", "", file_rel, actor=actor, tool="memory_update", ok=False, error=str(exc))
         return _err(str(exc))
 
 
@@ -239,7 +304,7 @@ def handle_memory_update(args: dict[str, Any], *, client: "MemoryClient") -> dic
 # memory_list                                                          #
 # ------------------------------------------------------------------ #
 
-def handle_memory_list(args: dict[str, Any], *, client: "MemoryClient") -> dict:
+def handle_memory_list(args: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict:
     layer = args.get("layer", "agent")
     try:
         mem_dir = _layer_dir(client, layer)
@@ -260,7 +325,7 @@ def handle_memory_list(args: dict[str, Any], *, client: "MemoryClient") -> dict:
 # memory_read                                                          #
 # ------------------------------------------------------------------ #
 
-def handle_memory_read(args: dict[str, Any], *, client: "MemoryClient") -> dict:
+def handle_memory_read(args: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict:
     file_rel = str(args.get("file", ""))
     if not file_rel:
         return _err("'file' is required")
@@ -282,7 +347,7 @@ def handle_memory_read(args: dict[str, Any], *, client: "MemoryClient") -> dict:
 # memory_recall                                                        #
 # ------------------------------------------------------------------ #
 
-def handle_memory_recall(args: dict[str, Any], *, client: "MemoryClient") -> dict:
+def handle_memory_recall(args: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict:
     query = str(args.get("query", ""))
     k = int(args.get("k", 5))
     layers = args.get("layers") or client.config.enabled_layers
@@ -302,10 +367,10 @@ def handle_memory_recall(args: dict[str, Any], *, client: "MemoryClient") -> dic
 # wiki_link                                                            #
 # ------------------------------------------------------------------ #
 
-def handle_wiki_link(args: dict[str, Any], *, client: "MemoryClient") -> dict:
+def handle_wiki_link(args: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict:
     from_topic = str(args.get("from_topic", ""))
     to_topic = str(args.get("to_topic", ""))
-    kind = str(args.get("kind", "related"))
+    kind = _one_line(str(args.get("kind", "related")))
 
     if not from_topic or not to_topic:
         return _err("'from_topic' and 'to_topic' are required")
@@ -314,6 +379,13 @@ def handle_wiki_link(args: dict[str, Any], *, client: "MemoryClient") -> dict:
         from bobo_memory.core.paths import wiki_dir
         from bobo_memory.core.atomic import atomic_write, file_lock
         wiki = wiki_dir(client.project_root)
+
+        from_file = wiki / _sanitize_topic(from_topic)
+        to_file = wiki / _sanitize_topic(to_topic)
+
+        client.policy.check_action("wiki_link", "wiki", actor=actor)
+        client.guard.assert_within_memory(from_file)
+        client.guard.assert_within_memory(to_file)
 
         def _add_xref(source_file: Path, target_file: Path, rel_kind: str) -> None:
             if not source_file.exists():
@@ -329,14 +401,13 @@ def handle_wiki_link(args: dict[str, Any], *, client: "MemoryClient") -> dict:
             with file_lock(source_file):
                 atomic_write(source_file, content)
 
-        from_file = wiki / f"{from_topic}.md"
-        to_file = wiki / f"{to_topic}.md"
         _add_xref(from_file, to_file, kind)
         _add_xref(to_file, from_file, "referenced-by")
 
-        client._log("wiki_link", "wiki", tool="wiki_link")
+        client._log("wiki_link", "wiki", actor=actor, tool="wiki_link")
         return _ok({"from": from_topic, "to": to_topic, "kind": kind})
     except Exception as exc:
+        client._log("wiki_link", "wiki", actor=actor, tool="wiki_link", ok=False, error=str(exc))
         return _err(str(exc))
 
 
@@ -344,9 +415,9 @@ def handle_wiki_link(args: dict[str, Any], *, client: "MemoryClient") -> dict:
 # wiki_log                                                             #
 # ------------------------------------------------------------------ #
 
-def handle_wiki_log(args: dict[str, Any], *, client: "MemoryClient") -> dict:
-    kind = str(args.get("kind", "event"))
-    title = str(args.get("title", ""))
+def handle_wiki_log(args: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict:
+    kind = _one_line(str(args.get("kind", "event")))
+    title = _one_line(str(args.get("title", "")))
     summary = str(args.get("summary", ""))
     today = date.today().isoformat()
 
@@ -359,13 +430,24 @@ def handle_wiki_log(args: dict[str, Any], *, client: "MemoryClient") -> dict:
 
         entry = f"\n## [{today}] {kind} | {title}\n\n{summary}\n"
 
+        client.policy.check_action("wiki_log", "wiki", actor=actor, content=entry)
+        client.guard.assert_within_memory(log_file)
+
         with file_lock(log_file):
             existing = log_file.read_text(encoding="utf-8") if log_file.exists() else ""
+            # Rotate when the combined log would exceed the layer size limit,
+            # so wiki_log never grows unbounded and never gets hard-blocked.
+            max_bytes = client.policy.effective_max_size_bytes("wiki")
+            if existing and len((existing + entry).encode("utf-8")) > max_bytes:
+                ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d%H%M%S")
+                atomic_write(wiki / f"log-{ts}.md", existing)
+                existing = f"# Log (continued from log-{ts}.md)\n"
             atomic_write(log_file, existing + entry)
 
-        client._log("wiki_log", "wiki", tool="wiki_log")
+        client._log("wiki_log", "wiki", actor=actor, tool="wiki_log")
         return _ok({"appended": entry.strip()})
     except Exception as exc:
+        client._log("wiki_log", "wiki", actor=actor, tool="wiki_log", ok=False, error=str(exc))
         return _err(str(exc))
 
 
@@ -373,10 +455,14 @@ def handle_wiki_log(args: dict[str, Any], *, client: "MemoryClient") -> dict:
 # ingest_next                                                          #
 # ------------------------------------------------------------------ #
 
-def handle_ingest_next(args: dict[str, Any], *, client: "MemoryClient") -> dict:
+def handle_ingest_next(args: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict:
     from bobo_memory.stream.inbox import pop_next_task
 
-    task = pop_next_task(client.project_root)
+    task = pop_next_task(
+        client.project_root,
+        lease_minutes=client.policy.staging.lease_minutes,
+        max_attempts=client.policy.staging.max_attempts,
+    )
     if task is None:
         return _ok({"task": None, "message": "No pending ingest tasks."})
 
@@ -386,7 +472,7 @@ def handle_ingest_next(args: dict[str, Any], *, client: "MemoryClient") -> dict:
     except (FileNotFoundError, OSError):
         raw_content = "(file not found)"
 
-    client._log("ingest_next", tool="ingest_next")
+    client._log("ingest_next", actor=actor, tool="ingest_next")
     return _ok({
         "task": task,
         "raw_content": raw_content,
@@ -394,9 +480,30 @@ def handle_ingest_next(args: dict[str, Any], *, client: "MemoryClient") -> dict:
             f"Please integrate this source into memory/wiki. "
             f"Source: '{task.get('title')}' (id={task.get('source_id')}). "
             "Write memory files using memory_save, update wiki with wiki_link, "
-            "and log the event with wiki_log."
+            "and log the event with wiki_log. When you have finished, call "
+            f"ingest_done(source_id='{task.get('source_id')}') to confirm — "
+            "otherwise the task will be retried after the lease expires."
         ),
     })
+
+
+# ------------------------------------------------------------------ #
+# ingest_done                                                          #
+# ------------------------------------------------------------------ #
+
+def handle_ingest_done(args: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict:
+    from bobo_memory.stream.inbox import complete_task
+
+    source_id = str(args.get("source_id", "")).strip()
+    if not source_id:
+        return _err("'source_id' is required")
+
+    removed = complete_task(client.project_root, source_id)
+    if not removed:
+        return _err(f"No staging task found with source_id '{source_id}'")
+
+    client._log("ingest_done", "", source_id, actor=actor, tool="ingest_done")
+    return _ok({"completed": source_id})
 
 
 # ------------------------------------------------------------------ #

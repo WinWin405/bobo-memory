@@ -36,7 +36,7 @@ def _ts() -> str:
 # memory_forget                                                        #
 # ------------------------------------------------------------------ #
 
-def handle_memory_forget(args: dict[str, Any], *, client: "MemoryClient") -> dict:
+def handle_memory_forget(args: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict:
     file_rel = str(args.get("file", ""))
     reason = str(args.get("reason") or "no reason given")
 
@@ -52,6 +52,7 @@ def handle_memory_forget(args: dict[str, Any], *, client: "MemoryClient") -> dic
             return _err(f"File not found: {file_rel}")
 
         layer = _infer_layer(file_path, client)
+        client.policy.check_action("memory_forget", layer, actor=actor)
         mem_dir = file_path.parent
 
         # Build trash destination
@@ -78,7 +79,7 @@ def handle_memory_forget(args: dict[str, Any], *, client: "MemoryClient") -> dic
             line = f"- [{trash_name}](.trash/{trash_name}) — deleted {ts} | reason: {reason}\n"
             atomic_write(idx, existing + line)
 
-        client._log("memory_forget", layer, file_rel, tool="memory_forget")
+        client._log("memory_forget", layer, file_rel, actor=actor, tool="memory_forget")
         return _ok({
             "file": file_rel,
             "trash_file": str(trash_path.relative_to(client.project_root)),
@@ -86,7 +87,7 @@ def handle_memory_forget(args: dict[str, Any], *, client: "MemoryClient") -> dic
         })
 
     except Exception as exc:
-        client._log("memory_forget", "", file_rel, tool="memory_forget", ok=False, error=str(exc))
+        client._log("memory_forget", "", file_rel, actor=actor, tool="memory_forget", ok=False, error=str(exc))
         return _err(str(exc))
 
 
@@ -94,7 +95,7 @@ def handle_memory_forget(args: dict[str, Any], *, client: "MemoryClient") -> dic
 # memory_restore                                                       #
 # ------------------------------------------------------------------ #
 
-def handle_memory_restore(args: dict[str, Any], *, client: "MemoryClient") -> dict:
+def handle_memory_restore(args: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict:
     trash_rel = str(args.get("trash_file", ""))
     if not trash_rel:
         return _err("'trash_file' is required")
@@ -134,11 +135,11 @@ def handle_memory_restore(args: dict[str, Any], *, client: "MemoryClient") -> di
                 atomic_write(idx, "".join(new_lines))
 
         layer = _infer_layer(restore_path, client)
-        client._log("memory_restore", layer, str(restore_path.relative_to(client.project_root)), tool="memory_restore")
+        client._log("memory_restore", layer, str(restore_path.relative_to(client.project_root)), actor=actor, tool="memory_restore")
         return _ok({"restored_to": str(restore_path.relative_to(client.project_root))})
 
     except Exception as exc:
-        client._log("memory_restore", "", trash_rel, tool="memory_restore", ok=False, error=str(exc))
+        client._log("memory_restore", "", trash_rel, actor=actor, tool="memory_restore", ok=False, error=str(exc))
         return _err(str(exc))
 
 
@@ -146,7 +147,7 @@ def handle_memory_restore(args: dict[str, Any], *, client: "MemoryClient") -> di
 # memory_purge                                                         #
 # ------------------------------------------------------------------ #
 
-def handle_memory_purge(args: dict[str, Any], *, client: "MemoryClient") -> dict:
+def handle_memory_purge(args: dict[str, Any], *, client: "MemoryClient", actor: str = "agent") -> dict:
     file_rel = str(args.get("file", ""))
     confirm = bool(args.get("confirm", False))
 
@@ -160,6 +161,7 @@ def handle_memory_purge(args: dict[str, Any], *, client: "MemoryClient") -> dict
 
     try:
         client.policy.check_purge_allowed(layer)
+        client.policy.check_action("memory_purge", layer, actor=actor)
         client.guard.assert_within_memory(file_path)
 
         if not file_path.exists():
@@ -171,9 +173,9 @@ def handle_memory_purge(args: dict[str, Any], *, client: "MemoryClient") -> dict
         remove_from_entrypoint_index(file_path.parent, filename=file_path.name)
 
         # Audit record is permanent and cannot be deleted
-        client._log("memory_purge", layer, file_rel, tool="memory_purge")
+        client._log("memory_purge", layer, file_rel, actor=actor, tool="memory_purge")
         return _ok({"purged": file_rel})
 
     except Exception as exc:
-        client._log("memory_purge", layer, file_rel, tool="memory_purge", ok=False, error=str(exc))
+        client._log("memory_purge", layer, file_rel, actor=actor, tool="memory_purge", ok=False, error=str(exc))
         return _err(str(exc))

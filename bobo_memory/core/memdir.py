@@ -97,28 +97,41 @@ _WHAT_NOT_TO_SAVE = """
 - Secrets, credentials, or personal data (enforced by policy).
 """.strip()
 
+_WHEN_TO_SAVE = """
+## When to save
+
+Save a memory when:
+- The user corrects you, or states a preference that should outlast this session.
+- A decision is made that future sessions must respect.
+- You discover a non-obvious fact or constraint that is not written down anywhere else.
+- The user explicitly asks you to remember something.
+
+Before saving, check the index (or use `memory_recall`) for an existing memory on
+the same topic — prefer `memory_update` over creating a near-duplicate file.
+""".strip()
+
 _HOW_TO_SAVE = """
-## How to save memories (two-step protocol)
+## How to save memories
 
-1. Write the memory as a self-contained markdown file in the memory directory.
-   - Name: use a short, descriptive slug (e.g. `budget-constraints.md`).
-   - Include YAML frontmatter: `sources`, `tags`, `created`, `updated`.
-   - Keep each file focused on one topic. Prefer multiple small files over one large one.
+Call the `memory_save` tool:
+- `layer`:   which memory layer to write to
+- `topic`:   short descriptive slug (e.g. `budget-constraints`)
+- `content`: self-contained markdown — one topic per memory, small files over large ones
+- `summary`: one line shown in the MEMORY.md index
+- `tags` / `sources`: optional metadata
 
-2. Add or update a single index line in MEMORY.md:
-   ```
-   - [budget-constraints.md](budget-constraints.md) — Key constraints on Q3 budget planning
-   ```
-   Never put full content in MEMORY.md — it is an index only.
+The memory file and its MEMORY.md index line are both written automatically —
+never edit MEMORY.md yourself. Use `memory_update` to revise an existing memory
+and `memory_forget` to retire one.
 """.strip()
 
 _SEARCHING_PAST = """
 ## Recalling past memories
 
-- Start by reading MEMORY.md to see the index of all saved memories.
+- The MEMORY.md index below shows all saved memories at a glance.
 - Use `memory_recall(query=..., k=5)` to find the most relevant files for your current task.
-- Read specific memory files when you need the full content.
-- Avoid re-reading files you have already seen in this session (they are tracked as `already_surfaced`).
+- Use `memory_read(file=...)` when you need the full content of one memory.
+- Avoid re-reading files you have already seen in this session.
 """.strip()
 
 _DIR_EXISTS_GUIDANCE = (
@@ -127,16 +140,40 @@ _DIR_EXISTS_GUIDANCE = (
 )
 
 
+def build_shared_instructions() -> str:
+    """Return the layer-independent memory instructions as one block.
+
+    Inject this ONCE per system prompt, then render each layer with
+    ``include_instructions=False`` so the how-to text is not duplicated.
+    """
+    return "\n\n".join([
+        "# Memory system",
+        "You have a persistent, file-based memory system.",
+        _TYPES_SECTION,
+        _WHEN_TO_SAVE,
+        _WHAT_NOT_TO_SAVE,
+        _HOW_TO_SAVE,
+        _SEARCHING_PAST,
+    ])
+
+
 def build_memory_lines(
     display_name: str,
     memory_dir: Path | str,
     *,
     extra_guidelines: list[str] | None = None,
     skip_index: bool = False,
+    include_instructions: bool = True,
 ) -> list[str]:
     """Return the instruction lines that teach an LLM how to use a memory directory.
 
     This is the Python equivalent of buildMemoryLines() in memdir.ts.
+
+    Args:
+        include_instructions: When False, omit the shared how-to sections
+                              (types / when / how / recall) — use together with
+                              build_shared_instructions() to avoid injecting
+                              the same text once per layer.
     """
     memory_dir = Path(memory_dir)
     lines: list[str] = [
@@ -145,20 +182,26 @@ def build_memory_lines(
         f"You have a persistent, file-based memory system at `{memory_dir}`. "
         f"{_DIR_EXISTS_GUIDANCE}",
         "",
-        _TYPES_SECTION,
-        "",
-        _WHAT_NOT_TO_SAVE,
-        "",
-        _HOW_TO_SAVE,
-        "",
     ]
+
+    if include_instructions:
+        lines.extend([
+            _TYPES_SECTION,
+            "",
+            _WHEN_TO_SAVE,
+            "",
+            _WHAT_NOT_TO_SAVE,
+            "",
+            _HOW_TO_SAVE,
+            "",
+        ])
 
     if extra_guidelines:
         for guideline in extra_guidelines:
             lines.append(guideline)
         lines.append("")
 
-    if not skip_index:
+    if include_instructions and not skip_index:
         lines.append(_SEARCHING_PAST)
         lines.append("")
 
@@ -179,6 +222,7 @@ def build_memory_prompt(
     memory_dir: Path | str,
     *,
     extra_guidelines: list[str] | None = None,
+    include_instructions: bool = True,
 ) -> str:
     """Return the full system-prompt fragment for a memory directory.
 
@@ -190,7 +234,11 @@ def build_memory_prompt(
     """
     memory_dir = Path(memory_dir)
     entrypoint_raw = read_entrypoint(memory_dir)
-    lines = build_memory_lines(display_name, memory_dir, extra_guidelines=extra_guidelines)
+    lines = build_memory_lines(
+        display_name, memory_dir,
+        extra_guidelines=extra_guidelines,
+        include_instructions=include_instructions,
+    )
 
     lines.append(f"## {ENTRYPOINT_NAME}")
     lines.append("")

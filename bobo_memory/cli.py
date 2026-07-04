@@ -209,6 +209,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--port", type=int, default=8765)
     p_serve.set_defaults(func=cmd_serve)
 
+    # mcp (Model Context Protocol server, stdio)
+    p_mcp = sub.add_parser("mcp", help="Run the MCP stdio server (requires bobo-memory[mcp]).")
+    p_mcp.add_argument("--agent-type", default=None, dest="agent_type")
+    p_mcp.add_argument("--scope", default=None)
+    p_mcp.set_defaults(func=cmd_mcp)
+
     return parser
 
 
@@ -290,6 +296,19 @@ def cmd_serve(args: argparse.Namespace) -> None:
     port = getattr(args, "port", 8765)
     from bobo_memory.viewer.app import serve
     serve(project_root=root, port=port)
+
+
+# ------------------------------------------------------------------ #
+# mcp                                                                  #
+# ------------------------------------------------------------------ #
+
+def cmd_mcp(args: argparse.Namespace) -> None:
+    from bobo_memory.mcp_server import serve_mcp
+    serve_mcp(
+        getattr(args, "project_root", "."),
+        agent_type=getattr(args, "agent_type", None),
+        scope=getattr(args, "scope", None),
+    )
 
 
 def main(argv: list[str] | None = None) -> None:

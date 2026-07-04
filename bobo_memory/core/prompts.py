@@ -185,6 +185,19 @@ def session_extract_prompt(session_path: str | Path) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Layer routing                                                                 #
+# --------------------------------------------------------------------------- #
+
+LAYER_ROUTING_NOTE = """
+## Choosing a memory layer
+
+- **Agent memory** — knowledge tied to your role/agent type (see its scope note).
+- **Auto memory** — project-wide facts shared by every agent working on this project.
+- Pick ONE layer per fact; never save the same fact to both.
+""".strip()
+
+
+# --------------------------------------------------------------------------- #
 # Auto Memory compact system prompt                                             #
 # --------------------------------------------------------------------------- #
 

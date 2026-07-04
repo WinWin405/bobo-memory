@@ -156,8 +156,14 @@ def find_relevant_memories(
     bm25 = BM25Okapi(corpus)
     scores = bm25.get_scores(query_tokens)
 
-    # Sort by score, take top-k
-    ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)[:k]
+    # Keep only docs sharing at least one token with the query — BM25 scores
+    # alone can be non-positive on tiny corpora, so score sign is not a
+    # reliable relevance signal. Then sort by score and take top-k.
+    query_set = set(query_tokens)
+    matching = [i for i, doc in enumerate(corpus) if query_set & set(doc)]
+    ranked = sorted(
+        ((i, scores[i]) for i in matching), key=lambda x: x[1], reverse=True
+    )[:k]
 
     refs: list[MemoryFileRef] = []
     for idx, score in ranked:

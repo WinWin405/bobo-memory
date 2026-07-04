@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bobo-memory"
-version = "0.1.1"
+version = "0.2.0"
 description = "A universal memory middleware for LLM agents — file-based, scope-aware, BYO LLM."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,10 +28,10 @@ dependencies = [
     "pyyaml>=6.0",
     "rank-bm25>=0.2.2",
     "filelock>=3.12",
-    "watchdog>=4.0",
 ]
 
 [project.optional-dependencies]
+watch = ["watchdog>=4.0"]
 viewer = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "jinja2>=3.1"]
 embedding = ["sentence-transformers>=3.0"]
 mcp = ["mcp>=1.0"]
@@ -48,3 +48,6 @@ bobo-memory = "bobo_memory.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["bobo_memory*"]
+
+[tool.setuptools.package-data]
+bobo_memory = ["py.typed"]

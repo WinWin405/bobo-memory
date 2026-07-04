@@ -153,6 +153,10 @@ class BoboConfig(BaseModel):
             policy_data["audit"] = {"retention_days": self.policy.audit.retention_days}
         if self.policy.raw.max_file_size_kb is not None:
             policy_data["raw"] = {"max_file_size_kb": self.policy.raw.max_file_size_kb}
+        policy_data["staging"] = {
+            "lease_minutes": self.policy.staging.lease_minutes,
+            "max_attempts": self.policy.staging.max_attempts,
+        }
 
         data: dict[str, Any] = {
             "agent_type": self.agent_type,

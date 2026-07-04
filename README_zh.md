@@ -1,5 +1,6 @@
 # bobo-memory
 
+[![CI](https://github.com/WinWin405/bobo-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/WinWin405/bobo-memory/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![GitHub](https://img.shields.io/badge/github-WinWin405%2Fbobo--memory-181717?logo=github)](https://github.com/WinWin405/bobo-memory)
@@ -39,7 +40,9 @@ pip install bobo-memory
 可选扩展：
 
 ```bash
-pip install "bobo-memory[viewer]"     # Web UI：fastapi + uvicorn
+pip install "bobo-memory[mcp]"        # MCP stdio server（Claude Code / IDE agent）
+pip install "bobo-memory[watch]"      # 目录监听：watchdog
+pip install "bobo-memory[viewer]"     # Web UI + 只读 REST API：fastapi + uvicorn
 pip install "bobo-memory[embedding]"  # 向量召回：sentence-transformers
 ```
 
@@ -83,9 +86,27 @@ result = mem.dispatch_tool_call(tool_name, arguments)
 # 摄入文件（写入 raw/ + staging/ — 不调用 LLM）
 mem.ingest(adapter="markdown", path="article.md")
 
-# Agent 在下一轮处理
+# Agent 在下一轮处理（任务被租约而非删除）
 result = mem.dispatch_tool_call("ingest_next", {})
 # → 返回原始内容 + 整合进 wiki/memory 的指引
+
+# 完成后确认——未确认的任务会在租约到期后重试
+mem.dispatch_tool_call("ingest_done", {"source_id": result["task"]["source_id"]})
+```
+
+### 4. 自动记忆捕获（零额外 LLM 调用）
+
+`memory_nudge()` 用纯规则（不调 LLM）扫描最近的消息，识别纠正、偏好、决策和
+"记住"类表述。命中时返回一行提醒，附加到**下一次**请求的 system prompt 末尾——
+主模型在它本来就要进行的回合里完成保存，全程不产生额外 API 调用：
+
+```python
+nudge = mem.memory_nudge(messages)          # 大多数时候返回 ""
+if nudge:
+    system_prompt += "\n\n" + nudge
+
+# 保存前可选的去重检查（BM25，不调 LLM）：
+similar = mem.find_similar("部署前必须先通过集成测试")
 ```
 
 ---
@@ -116,7 +137,8 @@ result = mem.dispatch_tool_call("ingest_next", {})
 | `memory_purge` | 永久删除（保留审计日志） |
 | `wiki_link` | Wiki 页面间双向交叉引用 |
 | `wiki_log` | 追加到 `wiki/log.md` 时间线 |
-| `ingest_next` | 从 `staging/pending.json` 拉取下一条任务 |
+| `ingest_next` | 从 `staging/pending.json` 租约下一条任务（未确认将按租约重试） |
+| `ingest_done` | 确认摄入任务已整合完成——从队列移除 |
 
 ---
 
@@ -203,6 +225,7 @@ bobo-memory ingest    --file PATH [--adapter markdown]
 bobo-memory proposal  list / accept --id X / reject --id X
 bobo-memory snapshot  save / apply / status
 bobo-memory serve     [--port 8765]
+bobo-memory mcp       [--agent-type NAME] [--scope SCOPE]
 ```
 
 ---
@@ -226,6 +249,44 @@ bobo-memory serve     [--port 8765]
 
 ~/.bobo/               (用户级 Agent 记忆，跨项目)
 ```
+
+---
+
+## MCP server
+
+把全部 12 个记忆工具暴露给任意 MCP 宿主（Claude Code、IDE agent 等）：
+
+```bash
+pip install "bobo-memory[mcp]"
+bobo-memory mcp --agent-type my-agent        # stdio 传输
+```
+
+Claude Code `.mcp.json` 配置示例：
+
+```json
+{
+  "mcpServers": {
+    "bobo-memory": { "command": "bobo-memory", "args": ["mcp"] }
+  }
+}
+```
+
+所有 MCP 工具调用同样经过 policy → guard → atomic → audit 完整链路。
+
+---
+
+## 只读 REST API（viewer）
+
+`bobo-memory serve`（需要 `[viewer]`）绑定 `127.0.0.1`，提供：
+
+| 端点 | 返回 |
+|---|---|
+| `GET /status` / `GET /storage` | 系统状态 / 磁盘用量 |
+| `GET /layers` | 启用的层与目录 |
+| `GET /memories/{layer}` | 该层的 MEMORY.md 索引 |
+| `GET /memory?file=<相对路径>` | 单个记忆文件（经 guard 校验） |
+| `GET /recall?query=&k=` | BM25 召回结果（ContextPack） |
+| `GET /audit` / `/lint` / `/proposals` | 审计日志 / wiki 健康检查 / 提案队列 |
 
 ---
 
@@ -257,7 +318,7 @@ for spec in mem.tool_specs():
 - `pyyaml >= 6.0`
 - `rank-bm25 >= 0.2.2`
 - `filelock >= 3.12`
-- `watchdog >= 4.0`
+- `watchdog >= 4.0`（可选，`pip install "bobo-memory[watch]"`——仅 `watch_directory()` 需要）
 
 ---
 

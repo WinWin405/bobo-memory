@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -147,18 +147,97 @@ def _append_staging(staging_file: Path, task: dict) -> None:
         atomic_write(staging_file, json.dumps(tasks, indent=2, ensure_ascii=False))
 
 
-def pop_next_task(project_root: Path) -> dict | None:
-    """Remove and return the first pending task from staging/pending.json."""
+def _load_tasks(staging_file: Path) -> list[dict] | None:
+    try:
+        return json.loads(staging_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _save_tasks(staging_file: Path, tasks: list[dict]) -> None:
+    atomic_write(staging_file, json.dumps(tasks, indent=2, ensure_ascii=False))
+
+
+def pop_next_task(
+    project_root: Path,
+    *,
+    lease_minutes: int = 30,
+    max_attempts: int = 3,
+) -> dict | None:
+    """Lease and return the next available task from staging/pending.json.
+
+    The task is NOT removed — it is marked ``in_progress`` with a lease
+    timestamp so a crashed agent cannot lose it:
+
+      - Call complete_task() (tool: ingest_done) to remove it after processing.
+      - If the lease expires before confirmation, the task becomes available
+        again, up to *max_attempts* leases in total.
+      - After *max_attempts* expired leases the task is marked ``failed`` and
+        kept in the file for human inspection.
+    """
     staging = staging_path(project_root)
     if not staging.exists():
         return None
+
+    now = datetime.now(tz=timezone.utc)
+    lease = timedelta(minutes=lease_minutes)
+
     with file_lock(staging):
-        try:
-            tasks = json.loads(staging.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None
+        tasks = _load_tasks(staging)
         if not tasks:
             return None
-        task = tasks.pop(0)
-        atomic_write(staging, json.dumps(tasks, indent=2, ensure_ascii=False))
-    return task
+
+        leased: dict | None = None
+        for task in tasks:
+            status = task.get("status", "pending")
+            if status == "pending":
+                pass  # available
+            elif status == "in_progress":
+                try:
+                    leased_at = datetime.fromisoformat(task.get("leased_at", ""))
+                except ValueError:
+                    leased_at = now - lease  # unreadable lease → treat as expired
+                if now - leased_at < lease:
+                    continue  # still being processed elsewhere
+                if int(task.get("attempts", 1)) >= max_attempts:
+                    task["status"] = "failed"
+                    continue
+            else:  # failed / unknown
+                continue
+
+            task["status"] = "in_progress"
+            task["leased_at"] = now.isoformat()
+            task["attempts"] = int(task.get("attempts", 0)) + 1
+            leased = task
+            break
+
+        _save_tasks(staging, tasks)
+
+    return leased
+
+
+def complete_task(project_root: Path, source_id: str) -> bool:
+    """Remove a finished task from staging (the ingest_done acknowledgement).
+
+    Returns True if a task with *source_id* was found and removed.
+    """
+    staging = staging_path(project_root)
+    if not staging.exists():
+        return False
+    with file_lock(staging):
+        tasks = _load_tasks(staging)
+        if tasks is None:
+            return False
+        remaining = [t for t in tasks if t.get("source_id") != source_id]
+        if len(remaining) == len(tasks):
+            return False
+        _save_tasks(staging, remaining)
+    return True
+
+
+def list_tasks(project_root: Path) -> list[dict]:
+    """Return all staging tasks (pending / in_progress / failed) without mutating."""
+    staging = staging_path(project_root)
+    if not staging.exists():
+        return []
+    return _load_tasks(staging) or []

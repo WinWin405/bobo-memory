@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: py${{ matrix.python-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # viewer extra + httpx enable the REST API tests; mcp enables the MCP tests
+      - name: Install
+        run: pip install -e ".[viewer,mcp]" pytest httpx
+
+      - name: Test
+        run: pytest bobo_memory/tests/ -q
+
+  # Core-only install: verifies optional deps stay optional
+  # (viewer / mcp tests must skip cleanly, lazy imports must not leak).
+  test-minimal:
+    name: minimal deps / ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (core only)
+        run: pip install -e . pytest
+
+      - name: Test
+        run: pytest bobo_memory/tests/ -q

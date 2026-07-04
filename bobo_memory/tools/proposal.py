@@ -12,6 +12,8 @@ from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
 if TYPE_CHECKING:
     from bobo_memory.client import MemoryClient
 
@@ -35,22 +37,23 @@ def write_proposal(
     proposals.mkdir(parents=True, exist_ok=True)
 
     proposal_id = str(uuid.uuid4())[:8]
-    proposal_filename = f"{topic}.{proposal_id}.md"
+    safe_topic = filename[:-3] if filename.endswith(".md") else filename
+    proposal_filename = f"{safe_topic}.{proposal_id}.md"
     proposal_path = proposals / proposal_filename
 
-    today = date.today().isoformat()
-    header = (
-        f"---\n"
-        f"proposal_id: {proposal_id}\n"
-        f"layer: {layer}\n"
-        f"target_file: {filename}\n"
-        f"summary: \"{summary}\"\n"
-        f"sources: {sources}\n"
-        f"tags: {tags}\n"
-        f"status: pending\n"
-        f"created: {today}\n"
-        f"---\n\n"
-    )
+    # yaml.safe_dump guarantees the header stays parseable regardless of
+    # quotes/newlines in summary, tags or sources.
+    meta = {
+        "proposal_id": proposal_id,
+        "layer": layer,
+        "target_file": filename,
+        "summary": summary,
+        "sources": sources,
+        "tags": tags,
+        "status": "pending",
+        "created": date.today().isoformat(),
+    }
+    header = "---\n" + yaml.safe_dump(meta, allow_unicode=True, sort_keys=False) + "---\n\n"
 
     with file_lock(proposal_path):
         atomic_write(proposal_path, header + content)
@@ -129,6 +132,7 @@ def accept_proposal(project_root: Path, proposal_id: str, client: "MemoryClient"
     from bobo_memory.tools.handlers import _layer_dir, _build_frontmatter
     from bobo_memory.core.memdir import update_entrypoint_index
     from bobo_memory.core.atomic import atomic_write, file_lock
+    from bobo_memory.core.policy import PolicyViolation
 
     mem_dir = _layer_dir(client, layer)
     mem_dir.mkdir(parents=True, exist_ok=True)
@@ -136,6 +140,16 @@ def accept_proposal(project_root: Path, proposal_id: str, client: "MemoryClient"
 
     front = _build_frontmatter(sources, tags)
     full_content = front + content
+
+    # Accepted proposals still go through the same policy + guard rails
+    # (size limit, secret scan, path boundary). The merge is executed by the
+    # system on behalf of the reviewing human.
+    try:
+        client.policy.check_action("memory_save", layer, actor="system", content=full_content, sources=sources)
+        client.guard.assert_within_memory(file_path)
+    except PolicyViolation as exc:
+        client._log("proposal_rejected_by_policy", layer, str(pf), tool="proposal_accept", ok=False, error=str(exc))
+        return {"ok": False, "error": f"proposal violates policy: {exc}"}
 
     with file_lock(file_path):
         atomic_write(file_path, full_content)

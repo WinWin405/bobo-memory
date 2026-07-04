@@ -1,0 +1,72 @@
+name: Release
+
+# Triggered ONLY by version tags (e.g. `git push origin v0.2.0`).
+# Pipeline: test → build (with tag/version consistency check) → publish.
+# Publishing uses PyPI Trusted Publishing (OIDC) — no API token stored in GitHub.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e ".[viewer,mcp]" pytest httpx
+
+      - name: Test
+        run: pytest bobo_memory/tests/ -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check tag matches package version
+        run: |
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "::error::Tag v$TAG does not match pyproject.toml version $VERSION" >&2
+            exit 1
+          fi
+          echo "Releasing bobo-memory $VERSION"
+
+      - name: Build sdist and wheel
+        run: |
+          pip install build
+          python -m build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/bobo-memory/
+    permissions:
+      id-token: write   # OIDC — required for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -73,6 +73,7 @@ class MemoryClient:
 
         self._auto_mem = AutoMemory(self.project_root)
         self._session_mem = SessionMemory(self.project_root)
+        self._last_nudge_msg_count: int | None = None  # None → no nudge sent yet
 
         # Init directories for enabled layers
         self._init_dirs()
@@ -122,25 +123,34 @@ class MemoryClient:
         if base_prompt.strip():
             sections.append(base_prompt.strip())
 
+        # Per-layer fragments carry only their directory, scope note and index;
+        # the shared how-to instructions are injected once below.
+        layer_fragments: list[str] = []
+
         if "agent_memory" in include and "agent" in layers:
-            fragment = self._agent_mem.build_prompt()
+            fragment = self._agent_mem.build_prompt(include_instructions=False)
             if fragment:
-                sections.append(fragment)
+                layer_fragments.append(fragment)
 
         if "auto_memory" in include and "auto" in layers:
-            fragment = self._auto_mem.build_prompt()
+            fragment = self._auto_mem.build_prompt(include_instructions=False)
             if fragment:
-                sections.append(fragment)
+                layer_fragments.append(fragment)
 
         if "wiki_index" in include and "wiki" in layers:
-            try:
-                from bobo_memory.layers.wiki import WikiLayer
-                wiki = WikiLayer(self.project_root)
-                fragment = wiki.build_prompt()
-                if fragment:
-                    sections.append(fragment)
-            except ImportError:
-                pass
+            from bobo_memory.layers.wiki import WikiLayer
+            wiki = WikiLayer(self.project_root)
+            fragment = wiki.build_prompt()
+            if fragment:
+                layer_fragments.append(fragment)
+
+        if layer_fragments:
+            from bobo_memory.core.memdir import build_shared_instructions
+            sections.append(build_shared_instructions())
+            if len(layer_fragments) > 1:
+                from bobo_memory.core.prompts import LAYER_ROUTING_NOTE
+                sections.append(LAYER_ROUTING_NOTE)
+            sections.extend(layer_fragments)
 
         if extra_guidelines:
             sections.extend(extra_guidelines)
@@ -162,28 +172,67 @@ class MemoryClient:
         token_budget: int = 8000,
         mode: str = "bm25",
     ) -> "Any":
-        """Recall relevant memory files for *query*.
+        """Recall relevant memory files for *query*. Returns a ContextPack."""
+        from bobo_memory.core.recall import find_relevant_memories
+        return find_relevant_memories(
+            query=query,
+            k=k,
+            layers=layers or self.config.enabled_layers,
+            project_root=self.project_root,
+            agent_type=self.agent_type,
+            scope=self.scope,
+            already_surfaced=already_surfaced or [],
+            recent_tools=recent_tools or [],
+            token_budget=token_budget,
+            mode=mode,
+        )
 
-        Returns a ContextPack (available after M2 implementation).
-        Falls back to a plain dict in M1.
+    # ------------------------------------------------------------------ #
+    # Auto-capture (piggyback mode — zero extra LLM calls)                 #
+    # ------------------------------------------------------------------ #
+
+    def memory_nudge(
+        self,
+        messages: list[dict],
+        *,
+        lookback: int = 4,
+        cooldown_messages: int = 6,
+    ) -> str:
+        """Return a one-line system-prompt nudge when recent messages look memory-worthy.
+
+        Rule-based scan only — never calls an LLM. Append the returned string
+        to the NEXT request's system prompt; the main model then decides and
+        calls memory_save within its normal turn.
+
+        Returns "" when nothing fired or when fewer than *cooldown_messages*
+        messages have been added since the last nudge (prevents nagging).
         """
-        try:
-            from bobo_memory.core.recall import find_relevant_memories
-            from bobo_memory.core.context_pack import ContextPack, MemoryFileRef
-            return find_relevant_memories(
-                query=query,
-                k=k,
-                layers=layers or self.config.enabled_layers,
-                project_root=self.project_root,
-                agent_type=self.agent_type,
-                scope=self.scope,
-                already_surfaced=already_surfaced or [],
-                recent_tools=recent_tools or [],
-                token_budget=token_budget,
-                mode=mode,
-            )
-        except ImportError:
-            return {"query": query, "files": [], "note": "M2 recall not yet available"}
+        from bobo_memory.core.triggers import build_nudge, detect_memory_signal
+
+        if (
+            self._last_nudge_msg_count is not None
+            and len(messages) - self._last_nudge_msg_count < cooldown_messages
+        ):
+            return ""
+        signal = detect_memory_signal(messages, lookback=lookback)
+        if not signal.triggered:
+            return ""
+        self._last_nudge_msg_count = len(messages)
+        return build_nudge(signal)
+
+    def find_similar(
+        self,
+        content: str,
+        *,
+        k: int = 3,
+        layers: list[str] | None = None,
+    ) -> list[Any]:
+        """Return up to *k* existing memories similar to *content* (BM25, no LLM).
+
+        Use before saving to decide between memory_save and memory_update.
+        """
+        pack = self.recall(query=content, k=k, layers=layers)
+        return list(pack.files)
 
     # ------------------------------------------------------------------ #
     # Tools                                                                #
@@ -273,12 +322,9 @@ class MemoryClient:
 
     @property
     def compact(self) -> "Any":
-        """Lazy accessor for the compact sub-module (available after M4)."""
-        try:
-            from bobo_memory.compact import CompactHelper
-            return CompactHelper(self)
-        except ImportError:
-            raise ImportError("Compact module is available in M4. Run M4 implementation first.")
+        """Lazy accessor for the context-compaction helper."""
+        from bobo_memory.compact import CompactHelper
+        return CompactHelper(self)
 
     # ------------------------------------------------------------------ #
     # Snapshot                                                             #
@@ -286,12 +332,9 @@ class MemoryClient:
 
     @property
     def snapshot(self) -> "Any":
-        """Lazy accessor for the snapshot manager (available after M4)."""
-        try:
-            from bobo_memory.snapshot.manager import SnapshotManager
-            return SnapshotManager(self.agent_type, self.project_root)
-        except ImportError:
-            raise ImportError("Snapshot module available after M4.")
+        """Lazy accessor for the snapshot manager."""
+        from bobo_memory.snapshot.manager import SnapshotManager
+        return SnapshotManager(self.agent_type, self.project_root)
 
     # ------------------------------------------------------------------ #
     # Team memory                                                          #
@@ -299,12 +342,9 @@ class MemoryClient:
 
     @property
     def team(self) -> "Any":
-        """Lazy accessor for team memory (available after M5)."""
-        try:
-            from bobo_memory.layers.team_memory import TeamMemory
-            return TeamMemory(self.project_root)
-        except ImportError:
-            raise ImportError("Team memory available after M5.")
+        """Lazy accessor for the team memory layer."""
+        from bobo_memory.layers.team_memory import TeamMemory
+        return TeamMemory(self.project_root)
 
     # ------------------------------------------------------------------ #
     # Lint                                                                 #
@@ -360,6 +400,7 @@ class MemoryClient:
           1. purge_expired_trash  — removes .trash files older than policy.trash.retention_days
           2. cleanup_sessions     — removes session files older than policy.session.max_age_days
           3. rotate_audit         — removes old audit JSONL files per policy.audit.retention_days
+          4. cleanup_locks        — removes stale *.lock files under .bobo/ (older than 24h)
 
         Returns a report dict::
 
@@ -367,23 +408,32 @@ class MemoryClient:
               "trash":   {"deleted_files": int, "freed_bytes": int, "errors": [...]},
               "session": {"deleted_files": int, "freed_bytes": int, "errors": [...]},
               "audit":   {"deleted_files": int, "freed_bytes": int, "errors": [...]},
+              "locks":   {"deleted_files": int, "freed_bytes": int, "errors": [...]},
               "total_freed_bytes": int,
             }
         """
-        from bobo_memory.core.janitor import cleanup_sessions, purge_expired_trash, rotate_audit
+        from bobo_memory.core.janitor import (
+            cleanup_locks,
+            cleanup_sessions,
+            purge_expired_trash,
+            rotate_audit,
+        )
 
         trash_report = purge_expired_trash(self.project_root, self.policy)
         session_report = cleanup_sessions(self.project_root, self.policy)
         audit_report = rotate_audit(self.project_root, self.policy)
+        locks_report = cleanup_locks(self.project_root)
 
         return {
             "trash": trash_report,
             "session": session_report,
             "audit": audit_report,
+            "locks": locks_report,
             "total_freed_bytes": (
                 trash_report["freed_bytes"]
                 + session_report["freed_bytes"]
                 + audit_report["freed_bytes"]
+                + locks_report["freed_bytes"]
             ),
         }
 
@@ -465,7 +515,7 @@ class MemoryClient:
                 tc, tb = _dir_stats(layer_dir / ".trash")
                 layers_stats[layer_name] = {"files": fc, "bytes": fb, "trash_files": tc, "trash_bytes": tb}
 
-        audit_bytes = _dir_bytes(self.project_root / ".bobo" / "audit")
+        audit_bytes = _dir_bytes(self._audit_dir)
 
         return {
             "project_root": str(self.project_root),
